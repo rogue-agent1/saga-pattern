@@ -1,6 +1,6 @@
-# saga-pattern
+# Saga Pattern (Distributed Transactions)
 
-Zero-dependency Python implementation.
+Saga Pattern (Distributed Transactions) — zero-dependency Python implementation.
 
 ## Usage
 
