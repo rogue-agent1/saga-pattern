@@ -1,9 +1,11 @@
-# Saga Pattern (Distributed Transactions)
+# saga-pattern
 
-Saga Pattern (Distributed Transactions) — zero-dependency Python implementation.
+Saga pattern for distributed transaction management.
 
 ## Usage
 
 ```bash
-python3 saga_pattern.py
+python3 saga_pattern.py test
 ```
+
+Zero dependencies. Python 3.8+.

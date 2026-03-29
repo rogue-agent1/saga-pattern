@@ -1,45 +1,71 @@
 #!/usr/bin/env python3
-"""Saga pattern for distributed transactions with compensations."""
+"""saga_pattern - Saga pattern for distributed transaction management."""
 import sys
 
 class SagaStep:
-    def __init__(self, name, action, compensation):
-        self.name, self.action, self.compensation = name, action, compensation
+    def __init__(self, name, execute, compensate):
+        self.name = name
+        self.execute = execute
+        self.compensate = compensate
 
-class SagaOrchestrator:
-    def __init__(self, steps): self.steps = steps; self.completed = []; self.log = []
-    def execute(self):
+class Saga:
+    def __init__(self, steps):
+        self.steps = steps
+        self.completed = []
+        self.log = []
+    def run(self, context=None):
+        if context is None:
+            context = {}
         for step in self.steps:
-            self.log.append(f"Executing: {step.name}")
             try:
-                result = step.action()
+                self.log.append({"step": step.name, "action": "execute"})
+                step.execute(context)
                 self.completed.append(step)
-                self.log.append(f"  Success: {result}")
             except Exception as e:
-                self.log.append(f"  Failed: {e}")
-                self._compensate(); return False
-        return True
-    def _compensate(self):
-        self.log.append("Starting compensation...")
+                self.log.append({"step": step.name, "action": "failed", "error": str(e)})
+                self._compensate(context)
+                return False, str(e)
+        return True, None
+    def _compensate(self, context):
         for step in reversed(self.completed):
-            self.log.append(f"  Compensating: {step.name}")
-            try: step.compensation()
-            except Exception as e: self.log.append(f"  Compensation failed: {e}")
+            try:
+                self.log.append({"step": step.name, "action": "compensate"})
+                step.compensate(context)
+            except Exception as e:
+                self.log.append({"step": step.name, "action": "compensate_failed", "error": str(e)})
 
-def main():
-    state = {"order":None,"payment":None,"inventory":None}
+def test():
+    log = []
     steps = [
-        SagaStep("CreateOrder", lambda: state.update({"order":"created"}) or "order-123",
-                 lambda: state.update({"order":"cancelled"})),
-        SagaStep("ProcessPayment", lambda: state.update({"payment":"charged"}) or "$50",
-                 lambda: state.update({"payment":"refunded"})),
-        SagaStep("ReserveInventory", lambda: (_ for _ in ()).throw(Exception("Out of stock")),
-                 lambda: state.update({"inventory":"released"})),
+        SagaStep("reserve_inventory",
+                 lambda ctx: log.append("reserved"),
+                 lambda ctx: log.append("unreserved")),
+        SagaStep("charge_payment",
+                 lambda ctx: log.append("charged"),
+                 lambda ctx: log.append("refunded")),
+        SagaStep("ship_order",
+                 lambda ctx: log.append("shipped"),
+                 lambda ctx: log.append("cancelled")),
     ]
-    saga = SagaOrchestrator(steps)
-    success = saga.execute()
-    for entry in saga.log: print(f"  {entry}")
-    print(f"Final state: {state}")
-    print(f"Saga {'succeeded' if success else 'rolled back'}")
+    saga = Saga(steps)
+    ok, err = saga.run()
+    assert ok and err is None
+    assert log == ["reserved", "charged", "shipped"]
+    # failing saga
+    log2 = []
+    fail_steps = [
+        SagaStep("step1", lambda ctx: log2.append("do1"), lambda ctx: log2.append("undo1")),
+        SagaStep("step2", lambda ctx: (_ for _ in ()).throw(RuntimeError("boom")), lambda ctx: log2.append("undo2")),
+        SagaStep("step3", lambda ctx: log2.append("do3"), lambda ctx: log2.append("undo3")),
+    ]
+    saga2 = Saga(fail_steps)
+    ok2, err2 = saga2.run()
+    assert not ok2 and "boom" in err2
+    assert log2 == ["do1", "undo1"]  # step2 failed, only step1 compensated
+    print("OK: saga_pattern")
 
-if __name__ == "__main__": main()
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "test":
+        test()
+    else:
+        print("Usage: saga_pattern.py test")
