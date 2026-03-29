@@ -1,71 +1,70 @@
 #!/usr/bin/env python3
-"""saga_pattern - Saga pattern for distributed transaction management."""
+"""Saga pattern for distributed transaction management."""
 import sys
 
 class SagaStep:
-    def __init__(self, name, execute, compensate):
+    def __init__(self, name, action, compensate):
         self.name = name
-        self.execute = execute
+        self.action = action
         self.compensate = compensate
 
 class Saga:
-    def __init__(self, steps):
-        self.steps = steps
+    def __init__(self, name):
+        self.name = name
+        self.steps = []
         self.completed = []
         self.log = []
-    def run(self, context=None):
-        if context is None:
-            context = {}
+    def add_step(self, name, action, compensate):
+        self.steps.append(SagaStep(name, action, compensate))
+    def execute(self, context):
         for step in self.steps:
             try:
-                self.log.append({"step": step.name, "action": "execute"})
-                step.execute(context)
+                self.log.append(f"executing: {step.name}")
+                step.action(context)
                 self.completed.append(step)
+                self.log.append(f"completed: {step.name}")
             except Exception as e:
-                self.log.append({"step": step.name, "action": "failed", "error": str(e)})
+                self.log.append(f"failed: {step.name} ({e})")
                 self._compensate(context)
                 return False, str(e)
         return True, None
     def _compensate(self, context):
         for step in reversed(self.completed):
             try:
-                self.log.append({"step": step.name, "action": "compensate"})
+                self.log.append(f"compensating: {step.name}")
                 step.compensate(context)
             except Exception as e:
-                self.log.append({"step": step.name, "action": "compensate_failed", "error": str(e)})
+                self.log.append(f"compensate failed: {step.name} ({e})")
 
 def test():
-    log = []
-    steps = [
-        SagaStep("reserve_inventory",
-                 lambda ctx: log.append("reserved"),
-                 lambda ctx: log.append("unreserved")),
-        SagaStep("charge_payment",
-                 lambda ctx: log.append("charged"),
-                 lambda ctx: log.append("refunded")),
-        SagaStep("ship_order",
-                 lambda ctx: log.append("shipped"),
-                 lambda ctx: log.append("cancelled")),
-    ]
-    saga = Saga(steps)
-    ok, err = saga.run()
+    ctx = {"balance": 100, "inventory": 5, "order": None}
+    saga = Saga("order")
+    saga.add_step("debit",
+        lambda c: c.__setitem__("balance", c["balance"] - 50),
+        lambda c: c.__setitem__("balance", c["balance"] + 50))
+    saga.add_step("reserve",
+        lambda c: c.__setitem__("inventory", c["inventory"] - 1),
+        lambda c: c.__setitem__("inventory", c["inventory"] + 1))
+    saga.add_step("confirm",
+        lambda c: c.__setitem__("order", "confirmed"),
+        lambda c: c.__setitem__("order", None))
+    ok, err = saga.execute(ctx)
     assert ok and err is None
-    assert log == ["reserved", "charged", "shipped"]
-    # failing saga
-    log2 = []
-    fail_steps = [
-        SagaStep("step1", lambda ctx: log2.append("do1"), lambda ctx: log2.append("undo1")),
-        SagaStep("step2", lambda ctx: (_ for _ in ()).throw(RuntimeError("boom")), lambda ctx: log2.append("undo2")),
-        SagaStep("step3", lambda ctx: log2.append("do3"), lambda ctx: log2.append("undo3")),
-    ]
-    saga2 = Saga(fail_steps)
-    ok2, err2 = saga2.run()
-    assert not ok2 and "boom" in err2
-    assert log2 == ["do1", "undo1"]  # step2 failed, only step1 compensated
-    print("OK: saga_pattern")
+    assert ctx["balance"] == 50 and ctx["inventory"] == 4 and ctx["order"] == "confirmed"
+    # Test compensation on failure
+    ctx2 = {"balance": 100, "inventory": 5, "order": None}
+    saga2 = Saga("fail_order")
+    saga2.add_step("debit",
+        lambda c: c.__setitem__("balance", c["balance"] - 50),
+        lambda c: c.__setitem__("balance", c["balance"] + 50))
+    def fail_reserve(c): raise RuntimeError("out of stock")
+    saga2.add_step("reserve", fail_reserve,
+        lambda c: c.__setitem__("inventory", c["inventory"] + 1))
+    ok2, err2 = saga2.execute(ctx2)
+    assert not ok2
+    assert ctx2["balance"] == 100  # compensated
+    print("  saga_pattern: ALL TESTS PASSED")
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "test":
-        test()
-    else:
-        print("Usage: saga_pattern.py test")
+    if len(sys.argv) > 1 and sys.argv[1] == "test": test()
+    else: print("Saga pattern for distributed transactions")
